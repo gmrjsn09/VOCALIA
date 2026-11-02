@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from google import genai
 from google.genai import types
 
-from .database import get_db, engine
+from database import get_db, engine
 import cuestionario as cq
 
 load_dotenv()
