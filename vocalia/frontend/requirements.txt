@@ -1,3 +1,8 @@
 streamlit
-requests
+fastapi
+httpx
 pandas
+sqlalchemy
+psycopg2-binary
+google-genai
+python-dotenv

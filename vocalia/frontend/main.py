@@ -4,6 +4,7 @@ import time
 import hashlib
 import secrets
 import threading
+import traceback
 from collections import Counter
 from contextlib import asynccontextmanager
 from typing import Dict, Optional
@@ -219,9 +220,13 @@ def consultar_gemini(prompt: str) -> dict:
         http_options=types.HttpOptions(api_version=GEMINI_API_VERSION, timeout=30_000),
     )
     candidatos = []
-    for m in [MODELO_OK, GEMINI_MODEL, "gemini-flash-latest"] + _modelos_disponibles(client):
+    for m in [MODELO_OK, GEMINI_MODEL, "gemini-flash-latest"]:
         if m and m not in candidatos:
             candidatos.append(m)
+    if len(candidatos) < 2:  # solo consulta la lista de modelos si faltan candidatos
+        for m in _modelos_disponibles(client):
+            if m not in candidatos:
+                candidatos.append(m)
     candidatos = candidatos[:2]
 
     errores = []
@@ -260,8 +265,10 @@ app.add_middleware(CORSMiddleware, allow_origins=ORIGENES, allow_methods=["*"], 
 
 @app.exception_handler(Exception)
 async def error_general(request, exc):
+    # El detalle completo queda en los registros del servidor; al usuario solo se le muestra un aviso
+    traceback.print_exception(type(exc), exc, exc.__traceback__)
     return JSONResponse(status_code=500,
-                        content={"detail": f"{type(exc).__name__}: {str(exc)[:500]}"})
+                        content={"detail": f"Error interno ({type(exc).__name__}). Inténtalo de nuevo en unos segundos."})
 
 
 # ======================= Utilidades =======================
@@ -271,7 +278,9 @@ def hashear(password: str) -> str:
     return f"{sal}${h}"
 
 
-def verificar(password: str, guardado: str) -> bool:
+def verificar(password: str, guardado: Optional[str]) -> bool:
+    if not guardado:
+        return False
     if "$" not in guardado:  # cuentas antiguas con contraseña en texto plano
         return secrets.compare_digest(password, guardado)
     sal, h = guardado.split("$", 1)
@@ -459,10 +468,10 @@ def ingresar(datos: IngresoIn, db: Session = Depends(get_db)):
 
 @app.post("/admin/registro")
 def registro_admin(datos: AdminRegistroIn, db: Session = Depends(get_db)):
-    """Solo los correos listados en ADMIN_EMAILS (.env) pueden crear cuenta de administrador."""
+    """Solo los correos listados en ADMIN_EMAILS (.env o Secrets) pueden crear cuenta de administrador."""
     correo = datos.correo.strip().lower()
     if correo not in ADMIN_EMAILS:
-        raise HTTPException(403, "Ese correo no está autorizado. Agrégalo en ADMIN_EMAILS del archivo .env y reinicia el backend.")
+        raise HTTPException(403, "Ese correo no está autorizado. Agrégalo en ADMIN_EMAILS (archivo .env o Secrets) y reinicia la app.")
     if len(datos.contrasena) < 6:
         raise HTTPException(400, "La contraseña debe tener al menos 6 caracteres")
     if db.execute(text("SELECT 1 FROM usuarios WHERE LOWER(correo) = :c"), {"c": correo}).fetchone():
@@ -528,7 +537,7 @@ def generar_perfil(id_usuario: int, db: Session = Depends(get_db)):
     nivel = ev.nivel_adaptativo or 1
     carreras = listar_carreras_db(db)
     if not carreras:
-        raise HTTPException(503, "No hay carreras de la UCV cargadas. Revisa la terminal del backend.")
+        raise HTTPException(503, "Las carreras de la UCV aún se están cargando. Espera unos segundos e inténtalo de nuevo.")
 
     try:
         prompt = cq.construir_prompt(
@@ -595,10 +604,10 @@ def carreras(db: Session = Depends(get_db)):
 def actualizar_carrera(id_carrera: int, datos: CarreraIn, db: Session = Depends(get_db)):
     exigir_admin(db, datos.id_admin)
     r = db.execute(text(f"""
-        UPDATE carreras SET nombre = :n, facultad = :fa, area_conocimiento = :a, tipo = :t, alcance = :al,
+        UPDATE carreras SET facultad = :fa, area_conocimiento = :a, tipo = :t, alcance = :al,
                malla = :m, malla_url = :mu, demanda_laboral = :d, salario_promedio = :s, sectores_clave = :sc
         WHERE {PK_CARRERA} = :id
-    """), {"n": datos.nombre.strip(), "fa": datos.facultad, "a": datos.area_conocimiento, "t": datos.tipo,
+    """), {"fa": datos.facultad, "a": datos.area_conocimiento, "t": datos.tipo,
            "al": datos.alcance, "m": datos.malla, "mu": (datos.malla_url or "").strip() or None,
            "d": datos.demanda_laboral, "s": datos.salario_promedio, "sc": datos.sectores_clave,
            "id": id_carrera})

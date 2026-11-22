@@ -1,2 +1,12 @@
+# Secretos: nunca subir al repositorio
 .env
-vocalia/backend/.env
+.env.*
+.streamlit/secrets.toml
+
+# Archivos generados por Python
+__pycache__/
+*.pyc
+
+# Entornos virtuales
+.venv/
+venv/

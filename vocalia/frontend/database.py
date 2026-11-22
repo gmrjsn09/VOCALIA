@@ -1,14 +1,17 @@
 import os
+import streamlit as st
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 load_dotenv()
 
-# Acepta la URL con o sin comillas (en el archivo .env o en las variables del servidor)
-DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip().strip('"').strip("'")
+# Lee primero de st.secrets (Streamlit Cloud) y si no existe, del .env local
+DATABASE_URL = st.secrets.get("DATABASE_URL") if "DATABASE_URL" in st.secrets else os.getenv("DATABASE_URL")
+DATABASE_URL = (DATABASE_URL or "").strip().strip('"').strip("'")
+
 if not DATABASE_URL:
-    raise RuntimeError("Falta DATABASE_URL en el archivo .env")
+    raise RuntimeError("Falta DATABASE_URL en Secrets o .env")
 
 # Algunos proveedores entregan "postgres://", SQLAlchemy necesita "postgresql://"
 if DATABASE_URL.startswith("postgres://"):

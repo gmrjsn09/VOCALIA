@@ -1,13 +1,10 @@
-import os
 import re
 import html
 import math
 from datetime import datetime
-import requests
 import pandas as pd
 import streamlit as st
 
-API = os.getenv("API_URL", "https://vocalia-c69r.onrender.com")
 URL_UCV = "https://www.ucv.edu.pe/programas/pregrados?modalidad=1"
 ORDEN = ["tecnologia", "salud", "negocios", "sociedad", "arte", "educacion", "ciencias"]
 CORTO = {"tecnologia": "Tecnología", "salud": "Salud", "negocios": "Negocios",
@@ -17,6 +14,30 @@ FACULTADES = ["Facultad de Ciencias Empresariales", "Facultad de Ingeniería y A
 COLORES = ["#F59E0B", "#22D3EE", "#A78BFA"]
 
 st.set_page_config(page_title="Vocacional IA · UCV Chiclayo", page_icon="🧭", layout="centered")
+
+# ---------------------------------- backend integrado ----------------------------------
+# La API (FastAPI) corre dentro de esta misma app, así que no hace falta un servidor aparte.
+try:
+    from fastapi.testclient import TestClient
+    from main import app as backend_app
+except Exception as e:  # faltan paquetes o variables de entorno (por ejemplo DATABASE_URL)
+    st.error(f"No se pudo iniciar el sistema: {str(e)[:300]}")
+    st.stop()
+
+
+@st.cache_resource(show_spinner=False)
+def get_cliente():
+    cliente = TestClient(backend_app, raise_server_exceptions=False)
+    cliente.__enter__()  # arranca la API: prepara las tablas y las 23 carreras de la UCV
+    return cliente
+
+
+try:
+    cliente_api = get_cliente()
+except Exception as e:
+    st.error(f"No se pudo iniciar el sistema: {str(e)[:300]}")
+    st.stop()
+
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;700;800&family=Inter:wght@400;500;600&display=swap');
@@ -97,25 +118,27 @@ def pct(v):
 
 
 def api(metodo, ruta, **kw):
+    """Llama a la API integrada. Devuelve el JSON, o None (mostrando el error) si algo falla."""
     try:
-        r = requests.request(metodo, f"{API}{ruta}", timeout=240, **kw)
-    except requests.ConnectionError:
-        st.error("No se pudo conectar con el servidor. ¿Está encendido el backend?")
-        return None
-    except requests.Timeout:
-        st.error("El servidor tardó demasiado en responder. Revisa la terminal del backend.")
+        r = cliente_api.request(metodo, ruta, **kw)
+    except Exception:
+        st.error("No se pudo completar la operación. Inténtalo de nuevo en unos segundos.")
         return None
     if r.status_code >= 400:
         try:
-            detalle = r.json().get("detail", "Ocurrió un error")
+            cuerpo = r.json()
+            detalle = cuerpo.get("detail") if isinstance(cuerpo, dict) else None
         except ValueError:
-            detalle = f"Error {r.status_code}: revisa la terminal del backend"
+            detalle = None
+        if not isinstance(detalle, str) or not detalle:  # p. ej. errores de validación (422)
+            detalle = "Revisa los datos ingresados e inténtalo de nuevo." if r.status_code == 422 \
+                else f"Ocurrió un error ({r.status_code}). Inténtalo de nuevo."
         st.error(detalle)
         return None
     try:
         return r.json()
     except ValueError:
-        st.error("El servidor respondió algo inesperado. Revisa la terminal del backend.")
+        st.error("El sistema respondió algo inesperado. Inténtalo de nuevo.")
         return None
 
 
@@ -283,7 +306,7 @@ if "usuario" not in st.session_state:
             elif u:
                 st.error("Esta cuenta no tiene permisos de administrador.")
         with st.expander("Primera vez: crear cuenta de administrador"):
-            st.caption("Solo funciona con los correos autorizados en ADMIN_EMAILS del archivo .env del backend.")
+            st.caption("Solo funciona con los correos autorizados en ADMIN_EMAILS (archivo .env o Secrets).")
             with st.form("registro_admin"):
                 n_a = st.text_input("Nombre")
                 c_a = st.text_input("Correo", key="ra_correo")
@@ -430,9 +453,9 @@ def pantalla_perfil():
     p = st.session_state.get("perfil")
     if not p:
         try:
-            r = requests.get(f"{API}/perfil/{uid}", timeout=30)
+            r = cliente_api.get(f"/perfil/{uid}")
             p = r.json().get("perfil") if r.status_code == 200 else None
-        except (requests.RequestException, ValueError):
+        except Exception:
             p = None
     if not p:
         st.info("Aún no tienes un perfil. Completa la evaluación para generarlo.")
@@ -514,7 +537,7 @@ def pantalla_perfil():
 def pantalla_oferta():
     carreras = api("GET", "/carreras") or []
     if not carreras:
-        st.info("Todavía no hay carreras cargadas. Revisa la terminal del backend.")
+        st.info("Todavía no hay carreras cargadas. Espera unos segundos y recarga la página.")
         return
     recomendadas = {c["nombre"].lower() for c in (st.session_state.get("perfil") or {}).get("carreras", [])}
     st.markdown(f'<div class="card"><div class="tag">Carreras de la UCV · Sede Chiclayo</div>'
@@ -608,6 +631,9 @@ def pantalla_admin():
     if not carreras:
         st.info("No hay carreras en la base de datos.")
         return
+    aviso = st.session_state.pop("_aviso_admin", None)
+    if aviso:
+        st.success(aviso)
     st.markdown('<div class="card"><div class="tag">Base de conocimiento</div>'
                 'Actualiza los datos de las carreras de la UCV: el enlace de la malla curricular y el mercado '
                 'laboral. Los cambios se ven al instante en la oferta educativa y en las recomendaciones.</div>',
@@ -618,7 +644,7 @@ def pantalla_admin():
     alcances = ["", "Local", "Regional", "Nacional", "Internacional"]
     with t1:
         with st.form(f"f_carrera_{c['id']}"):
-            nombre = st.text_input("Nombre", c["nombre"])
+            st.text_input("Nombre (oficial UCV, no editable)", c["nombre"], disabled=True)
             fac = st.selectbox("Facultad", FACULTADES,
                                index=FACULTADES.index(c["facultad"]) if c.get("facultad") in FACULTADES else 0)
             tipo = st.text_input("Tipo", c.get("tipo") or "Pregrado")
@@ -627,8 +653,9 @@ def pantalla_admin():
                                 placeholder="https://...")
             malla = st.text_area("Resumen de la malla (opcional, un ciclo o curso por línea)", c.get("malla") or "", height=160)
             if st.form_submit_button("Guardar datos", type="primary"):
-                if guardar_carrera(c, nombre=nombre, facultad=fac, tipo=tipo, alcance=alc, malla_url=url, malla=malla):
-                    st.success("Carrera actualizada.")
+                if guardar_carrera(c, facultad=fac, tipo=tipo, alcance=alc, malla_url=url, malla=malla):
+                    st.session_state["_aviso_admin"] = "Carrera actualizada."
+                    st.rerun()
     with t2:
         with st.form(f"f_mercado_{c['id']}"):
             dem = ["", "Alta", "Media", "Baja"]
@@ -637,7 +664,8 @@ def pantalla_admin():
             sectores = st.text_area("Sectores clave", c.get("sectores_clave") or "")
             if st.form_submit_button("Guardar mercado laboral", type="primary"):
                 if guardar_carrera(c, demanda_laboral=demanda, salario_promedio=sueldo or None, sectores_clave=sectores):
-                    st.success("Mercado laboral actualizado.")
+                    st.session_state["_aviso_admin"] = "Mercado laboral actualizado."
+                    st.rerun()
 
 
 # ---------------------------------- reportes del administrador ----------------------------------
