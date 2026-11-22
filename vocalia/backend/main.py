@@ -31,13 +31,46 @@ MODELO_OK = None  # último modelo de Gemini que respondió bien
 PK_CARRERA = "id_carrera"
 BASE_LISTA = threading.Event()
 
+# Tablas del sistema (se crean solas si la base está vacía, por ejemplo en Supabase)
+TABLAS = [
+    """CREATE TABLE IF NOT EXISTS usuarios (
+           id_usuario SERIAL PRIMARY KEY, nombre TEXT NOT NULL, correo TEXT UNIQUE, contrasena TEXT,
+           rol TEXT DEFAULT 'Estudiante', colegio TEXT, grado TEXT, edad INTEGER, sexo TEXT)""",
+    """CREATE TABLE IF NOT EXISTS instituciones_educativas (
+           id_institucion SERIAL PRIMARY KEY, nombre TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS carreras (
+           id_carrera SERIAL PRIMARY KEY, nombre TEXT NOT NULL, area_conocimiento TEXT,
+           id_institucion INTEGER REFERENCES instituciones_educativas (id_institucion),
+           facultad TEXT, tipo TEXT, alcance TEXT, malla TEXT, malla_url TEXT,
+           demanda_laboral TEXT, salario_promedio NUMERIC, sectores_clave TEXT)""",
+    """CREATE TABLE IF NOT EXISTS evaluaciones (
+           id_evaluacion SERIAL PRIMARY KEY,
+           id_usuario INTEGER REFERENCES usuarios (id_usuario) ON DELETE CASCADE,
+           fecha TIMESTAMP DEFAULT NOW(), estado TEXT, respuestas_json TEXT, perfil_json TEXT,
+           nivel_adaptativo INTEGER DEFAULT 1)""",
+    """CREATE TABLE IF NOT EXISTS perfiles_vocacionales (
+           id_perfil SERIAL PRIMARY KEY,
+           id_usuario INTEGER REFERENCES usuarios (id_usuario) ON DELETE CASCADE,
+           resumen_personalidad TEXT)""",
+    """CREATE TABLE IF NOT EXISTS preguntas (id_pregunta SERIAL PRIMARY KEY, enunciado TEXT)""",
+    """CREATE TABLE IF NOT EXISTS respuestas (
+           id_respuesta SERIAL PRIMARY KEY,
+           id_evaluacion INTEGER REFERENCES evaluaciones (id_evaluacion) ON DELETE CASCADE,
+           id_pregunta INTEGER REFERENCES preguntas (id_pregunta), valor TEXT)""",
+    """CREATE TABLE IF NOT EXISTS retroalimentacion (
+           id_feedback SERIAL PRIMARY KEY, id_usuario INTEGER, nivel_satisfaccion INTEGER,
+           comentarios TEXT, fecha TIMESTAMP DEFAULT NOW())""",
+]
+NOMBRES_TABLAS = ["usuarios", "instituciones_educativas", "carreras", "evaluaciones",
+                  "perfiles_vocacionales", "preguntas", "respuestas", "retroalimentacion"]
+
 
 def esperar_base():
     """Las consultas esperan (hasta 20 s) a que termine la preparación de la base al arrancar."""
     BASE_LISTA.wait(20)
 
 
-# ======================= Base de datos: columnas, tablas y carreras de la UCV =======================
+# ======================= Base de datos: tablas, columnas y carreras de la UCV =======================
 def _ejecutar(sql, params=None):
     """Ejecuta una sentencia y devuelve la lista de filas (vacía si no devuelve filas)."""
     with engine.begin() as con:
@@ -106,9 +139,14 @@ def sembrar_ucv():
 
 
 def preparar_base():
-    """Agrega (si faltan) columnas y tablas nuevas y deja lista la oferta de la UCV."""
+    """Crea (si faltan) tablas y columnas, protege las tablas y deja lista la oferta de la UCV."""
     global PK_CARRERA
     try:
+        for t in TABLAS:
+            try:
+                _ejecutar(t)
+            except Exception as e:
+                print("Aviso creando tabla:", str(e)[:150])
         sentencias = [
             "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS edad INTEGER",
             "ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS sexo TEXT",
@@ -123,15 +161,17 @@ def preparar_base():
             "ALTER TABLE carreras ADD COLUMN IF NOT EXISTS demanda_laboral TEXT",
             "ALTER TABLE carreras ADD COLUMN IF NOT EXISTS salario_promedio NUMERIC",
             "ALTER TABLE carreras ADD COLUMN IF NOT EXISTS sectores_clave TEXT",
-            """CREATE TABLE IF NOT EXISTS retroalimentacion (
-                   id_feedback SERIAL PRIMARY KEY, id_usuario INTEGER,
-                   nivel_satisfaccion INTEGER, comentarios TEXT, fecha TIMESTAMP DEFAULT NOW())""",
         ]
         for s in sentencias:
             try:
                 _ejecutar(s)
             except Exception as e:
                 print("Aviso preparando la base:", str(e)[:150])
+        for t in NOMBRES_TABLAS:  # protege los datos: la API pública de Supabase no podrá leerlas
+            try:
+                _ejecutar(f"ALTER TABLE {t} ENABLE ROW LEVEL SECURITY")
+            except Exception as e:
+                print("Aviso de seguridad en", t, "->", str(e)[:100])
         try:
             filas_pk = _ejecutar("""
                 SELECT a.attname FROM pg_index i
@@ -211,7 +251,7 @@ def consultar_gemini(prompt: str) -> dict:
 app = FastAPI(
     title="Vocacional IA API",
     description="Orientación vocacional basada en las carreras de la UCV sede Chiclayo",
-    version="4.0.0",
+    version="4.1.0",
     lifespan=lifespan,
 )
 
@@ -364,7 +404,14 @@ class FeedbackIn(BaseModel):
 # ======================= Endpoints =======================
 @app.get("/")
 def estado():
-    return {"status": "OK", "message": "API de Vocacional IA (UCV Chiclayo) funcionando", "version": "4.0.0"}
+    return {"status": "OK", "message": "API de Vocacional IA (UCV Chiclayo) funcionando", "version": "4.1.0"}
+
+
+@app.get("/salud")
+def salud(db: Session = Depends(get_db)):
+    """Comprueba que la API y la base de datos responden (también mantiene activa la base)."""
+    db.execute(text("SELECT 1"))
+    return {"ok": True}
 
 
 @app.post("/ingresar")
@@ -487,8 +534,9 @@ def generar_perfil(id_usuario: int, db: Session = Depends(get_db)):
         prompt = cq.construir_prompt(
             {"nombre": usuario.nombre, "colegio": usuario.colegio, "grado": usuario.grado,
              "edad": usuario.edad}, resp, carreras)
-        validas = {c["nombre"].strip().lower() for c in carreras}
+        validas = {c["nombre"].strip().lower(): c["nombre"] for c in carreras}
         parcial = cq.normalizar_ia(consultar_gemini(prompt), validas)
+        parcial = cq.completar_carreras(parcial, resp, carreras)  # respeta las carreras y el orden de la IA
         modo = "ia"
     except Exception as e:
         print("Gemini falló, usando respaldo:", str(e)[:300])

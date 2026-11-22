@@ -1,5 +1,7 @@
 """Catálogo de la UCV Chiclayo, banco de preguntas y lógica de puntajes (sin dependencias externas)."""
 import math
+import difflib
+import unicodedata
 
 UCV_NOMBRE = "Universidad César Vallejo (UCV) - Sede Chiclayo"
 URL_CARRERAS_UCV = "https://www.ucv.edu.pe/programas/pregrados?modalidad=1"
@@ -465,8 +467,12 @@ def perfil_respaldo(resp, carreras):
         candidatas.append({"nombre": c["nombre"], "universidad": c.get("universidad") or "",
                            "afinidad": base, "motivo": motivo, "_area": area})
     candidatas.sort(key=lambda x: x["afinidad"], reverse=True)
+    # La carrera principal SIEMPRE sale del área con más afinidad
+    area_top = areas[0]["clave"]
+    principal = next((c for c in candidatas if c["_area"] == area_top), None)
+    orden = ([principal] if principal else []) + [c for c in candidatas if c is not principal]
     elegidas, cuenta = [], {}
-    for c in candidatas:
+    for c in orden:
         if cuenta.get(c["_area"], 0) >= 2:
             continue
         cuenta[c["_area"]] = cuenta.get(c["_area"], 0) + 1
@@ -488,6 +494,47 @@ def perfil_respaldo(resp, carreras):
             "brechas": [f"{b['nombre']}: {b['consejo']}" for b in brechas], "plan": plan}
 
 
+def _sin_tildes(txt):
+    t = unicodedata.normalize("NFD", str(txt or ""))
+    return "".join(ch for ch in t if unicodedata.category(ch) != "Mn").lower().strip()
+
+
+def resolver_carrera(nombre, canon):
+    """Reconoce la carrera que dijo la IA aunque la escriba un poco distinto
+    (ej. 'Ingeniería de Sistemas e Informática' -> 'Ingeniería de Sistemas').
+    'canon' es {nombre en minúsculas: nombre oficial}. Devuelve el nombre oficial o None."""
+    n = _sin_tildes(nombre)
+    if not n:
+        return None
+    claves = {_sin_tildes(k): k for k in canon}
+    if n in claves:
+        return canon[claves[n]]
+    candidatos = [kn for kn in claves if min(len(n), len(kn)) >= 6 and (n in kn or kn in n)]
+    if candidatos:
+        mejor = max(candidatos, key=lambda kn: difflib.SequenceMatcher(None, n, kn).ratio())
+        return canon[claves[mejor]]
+    cerca = difflib.get_close_matches(n, list(claves), n=1, cutoff=0.78)
+    return canon[claves[cerca[0]]] if cerca else None
+
+
+def completar_carreras(parcial, resp, carreras):
+    """Mantiene EXACTAMENTE las carreras que recomendó la IA (y su orden). Solo si faltan para llegar
+    a 3, agrega las mejores del perfil de respaldo, siempre después de las de la IA."""
+    lista = list(parcial.get("carreras", []))
+    if len(lista) >= 3:
+        return parcial
+    usadas = {_sin_tildes(c["nombre"]) for c in lista}
+    for c in perfil_respaldo(resp, carreras)["carreras"]:
+        if len(lista) >= 3:
+            break
+        if _sin_tildes(c["nombre"]) not in usadas:
+            lista.append(c)
+            usadas.add(_sin_tildes(c["nombre"]))
+    nuevo = dict(parcial)
+    nuevo["carreras"] = lista
+    return nuevo
+
+
 def _a_int(v):
     try:
         return int(float(str(v).replace("%", "")))
@@ -496,16 +543,26 @@ def _a_int(v):
 
 
 def normalizar_ia(data, validas=None):
-    """Valida el JSON de Gemini. Solo acepta carreras que estén en la lista de la UCV."""
+    """Valida el JSON de Gemini. Solo acepta carreras de la UCV, reconociendo su nombre aunque venga
+    escrito distinto, y respeta el orden que dio la IA. 'validas': {minúsculas: nombre oficial}."""
     if not isinstance(data, dict) or not data.get("resumen"):
         raise ValueError("Respuesta incompleta de la IA")
-    carreras = []
-    for c in (data.get("carreras") or [])[:5]:
+    canon = None
+    if validas:
+        canon = validas if isinstance(validas, dict) else {str(v).lower(): str(v) for v in validas}
+    carreras, vistos = [], set()
+    for c in (data.get("carreras") or [])[:6]:
         if not (isinstance(c, dict) and c.get("nombre")):
             continue
-        if validas and str(c["nombre"]).strip().lower() not in validas:
+        nombre = str(c["nombre"]).strip()
+        if canon is not None:
+            nombre = resolver_carrera(nombre, canon)
+            if not nombre:
+                continue
+        if nombre in vistos:
             continue
-        carreras.append({"nombre": str(c["nombre"]).strip(), "universidad": str(c.get("universidad", "")),
+        vistos.add(nombre)
+        carreras.append({"nombre": nombre, "universidad": str(c.get("universidad", "")),
                          "afinidad": max(0, min(100, _a_int(c.get("afinidad", 0)))),
                          "motivo": str(c.get("motivo", ""))})
         if len(carreras) == 3:
@@ -523,10 +580,17 @@ def normalizar_ia(data, validas=None):
 
 def completar_perfil(parcial, resp, nivel, modo):
     perfil = dict(parcial)
-    carreras = sorted(perfil.get("carreras", []), key=lambda c: c["afinidad"], reverse=True)
-    nuevos = separar([c["afinidad"] for c in carreras], RATIO_CARRERAS, ESCALA_CARRERAS)
-    for c, n in zip(carreras, nuevos):
-        c["afinidad_directa"] = int(round(c["afinidad"]))
+    carreras = [dict(c) for c in perfil.get("carreras", [])]  # el orden ya viene alineado con el área principal
+    crudos, tope = [], None
+    for c in carreras:
+        v = float(c["afinidad"])
+        if tope is not None:
+            v = min(v, tope - 0.01)  # nunca supera a la anterior
+        crudos.append(v)
+        tope = v
+    nuevos = separar(crudos, RATIO_CARRERAS, ESCALA_CARRERAS)
+    for c, v, n in zip(carreras, crudos, nuevos):
+        c["afinidad_directa"] = int(round(v))
         c["afinidad"] = n
     perfil["carreras"] = carreras
     perfil["areas"] = calcular_puntajes(resp)
@@ -584,4 +648,5 @@ Responde SOLO con un JSON válido con esta estructura exacta:
   "plan": ["paso concreto 1", "paso concreto 2", "paso concreto 3"]
 }}
 Incluye exactamente 3 carreras de mayor a menor afinidad, coherentes con los puntajes por área.
+La PRIMERA carrera debe pertenecer al área con mayor afinidad ({areas[0]['nombre']}).
 """
