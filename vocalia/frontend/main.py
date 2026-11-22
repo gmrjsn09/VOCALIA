@@ -23,6 +23,9 @@ from database import get_db, engine
 import cuestionario as cq
 
 load_dotenv()
+import streamlit as st
+for k, v in st.secrets.items():
+    os.environ[k] = str(v)
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip()
 GEMINI_API_VERSION = os.getenv("GEMINI_API_VERSION", "v1beta").strip()
