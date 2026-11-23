@@ -85,6 +85,34 @@ SECUNDARIA = {
     "educación inicial": "salud", "educación primaria": "sociedad",
 }
 
+# Preguntas que más pesan en cada carrera (intereses I.., habilidades H.. y adaptativas A_<área>_<n>).
+# Sirven para distinguir carreras de una misma área (p. ej. Sistemas vs. Industrial vs. Civil).
+PREGUNTAS_CARRERA = {
+    "administración de empresas": ["I07", "I08", "I09", "H05", "H06"],
+    "administración y marketing": ["I08", "I09", "A_negocios_1", "H09", "H07"],
+    "administración y negocios internacionales": ["I08", "A_negocios_3", "A_negocios_1", "H07"],
+    "administración en turismo y hotelería": ["A_negocios_3", "I07", "H12", "H07"],
+    "contabilidad": ["I08", "A_negocios_2", "H01", "H06"],
+    "economía y finanzas": ["I08", "A_negocios_2", "H01", "I03"],
+    "arquitectura": ["I13", "I15", "A_arte_1", "A_arte_3", "H10", "H09"],
+    "ingeniería civil": ["I03", "A_tecnologia_2", "H14", "H01"],
+    "ingeniería industrial": ["I03", "I07", "A_tecnologia_1", "H06", "H05"],
+    "ingeniería de sistemas": ["I01", "I03", "A_tecnologia_1", "H02", "H01"],
+    "ingeniería mecánica eléctrica": ["I02", "I03", "A_tecnologia_2", "H14"],
+    "ingeniería ambiental": ["I19", "I20", "I21", "A_ciencias_1", "A_ciencias_2", "A_ciencias_3", "H13"],
+    "ingeniería empresarial": ["I07", "I08", "I09", "I03", "H05", "H06"],
+    "ingeniería en ciberseguridad": ["I01", "I02", "A_tecnologia_3", "H02", "H01"],
+    "medicina humana": ["I04", "I05", "A_salud_1", "A_salud_2", "H13", "H04"],
+    "enfermería": ["I05", "I04", "A_salud_1", "H03", "H12"],
+    "estomatología (odontología)": ["I04", "A_salud_2", "H14", "H10"],
+    "psicología": ["I06", "A_salud_3", "H03", "H04"],
+    "nutrición": ["I06", "I04", "H13"],
+    "derecho": ["I10", "I11", "A_sociedad_1", "A_sociedad_2", "H07", "H08"],
+    "ciencias de la comunicación": ["I14", "I15", "A_arte_2", "H07", "H08"],
+    "educación inicial": ["I17", "A_educacion_1", "H11", "H03"],
+    "educación primaria": ["I16", "I17", "A_educacion_2", "H11", "H07"],
+}
+
 AREAS = {
     "tecnologia": {"nombre": "Tecnología e Ingeniería", "icono": "💻", "color": "#22D3EE",
                    "holland": "Realista e Investigador",
@@ -440,8 +468,28 @@ def calcular_brechas(resp, areas_top):
     return [{"nombre": h["nombre"], "valor": v, "consejo": h["consejo"]} for v, _, h in cand[:4]]
 
 
+def afinidad_especifica(nombre, resp):
+    """Promedio (0-100) de las respuestas que definen a la carrera; None si no hay ninguna respondida."""
+    ids = PREGUNTAS_CARRERA.get((nombre or "").strip().lower(), [])
+    vals = [(resp[i] - 1) / 4 * 100 for i in ids if i in resp]
+    return sum(vals) / len(vals) if vals else None
+
+
+def intereses_destacados(resp, maximo=8):
+    """Textos de las afirmaciones que el estudiante marcó con 4 o 5 (las más altas primero)."""
+    resp = _limpiar(resp)
+    textos = {q["id"]: q["texto"] for q in BASE_INTERESES}
+    for area, lista in ADAPTATIVAS.items():
+        for i, t in enumerate(lista, start=1):
+            textos[f"A_{area}_{i}"] = t
+    altas = [(v, qid) for qid, v in resp.items() if qid in textos and v >= 4]
+    altas.sort(key=lambda x: -x[0])
+    return [textos[qid] for _, qid in altas[:maximo]]
+
+
 def perfil_respaldo(resp, carreras):
     """Perfil calculado sin IA (se usa si Gemini no responde)."""
+    resp = _limpiar(resp)
     areas = calcular_puntajes(resp)
     top = areas[:2]
     directo = {a["clave"]: a["directo"] for a in areas}
@@ -458,6 +506,9 @@ def perfil_respaldo(resp, carreras):
             base = directo[area]
             if sec in directo:
                 base = 0.7 * base + 0.3 * directo[sec]
+            esp = afinidad_especifica(nombre, resp)
+            if esp is not None:  # lo que respondiste sobre esta carrera en concreto decide entre las de una misma área
+                base = 0.6 * base + 0.4 * esp
             motivo = (f"Combina tu afinidad por {AREAS[area]['nombre']} con tu interés en {AREAS[sec]['nombre']}."
                       if sec in directo else f"Coincide con tu afinidad por {AREAS[area]['nombre']}.")
         else:
@@ -517,12 +568,30 @@ def resolver_carrera(nombre, canon):
     return canon[claves[cerca[0]]] if cerca else None
 
 
+def _alinear_con_area(lista, resp, carreras):
+    """La primera carrera siempre pertenece al área con mayor afinidad del estudiante."""
+    areas = calcular_puntajes(resp)
+    if not lista or not areas:
+        return lista
+    top = areas[0]["clave"]
+    if area_de_carrera(lista[0]["nombre"]) == top:
+        return lista
+    for i, c in enumerate(lista):
+        if area_de_carrera(c["nombre"]) == top:
+            return [c] + lista[:i] + lista[i + 1:]
+    principal = next((c for c in perfil_respaldo(resp, carreras)["carreras"]
+                      if area_de_carrera(c["nombre"]) == top), None)
+    return ([principal] + lista)[:3] if principal else lista
+
+
 def completar_carreras(parcial, resp, carreras):
     """Mantiene EXACTAMENTE las carreras que recomendó la IA (y su orden). Solo si faltan para llegar
     a 3, agrega las mejores del perfil de respaldo, siempre después de las de la IA."""
-    lista = list(parcial.get("carreras", []))
+    lista = _alinear_con_area(list(parcial.get("carreras", [])), resp, carreras)
     if len(lista) >= 3:
-        return parcial
+        nuevo = dict(parcial)
+        nuevo["carreras"] = lista[:3]
+        return nuevo
     usadas = {_sin_tildes(c["nombre"]) for c in lista}
     for c in perfil_respaldo(resp, carreras)["carreras"]:
         if len(lista) >= 3:
@@ -619,6 +688,7 @@ def construir_prompt(usuario, resp, carreras):
         sufijo = f" | {', '.join(extra)}" if extra else ""
         lineas.append(f"- {c['nombre']} ({c.get('facultad') or 'UCV'}){sufijo}")
     l_car = "\n".join(lineas)
+    l_int = "\n".join(f"- {t}" for t in intereses_destacados(resp)) or "- (sin respuestas destacadas)"
     edad = f", {usuario.get('edad')} años" if usuario.get("edad") else ""
     return f"""
 Actúa como un orientador vocacional experto de la Universidad César Vallejo (UCV), sede Chiclayo, Perú. Analiza el perfil de este estudiante de secundaria y recomienda carreras de la UCV.
@@ -633,6 +703,9 @@ Autoevaluación de habilidades (1-5):
 
 Brechas de competencias detectadas para sus áreas principales:
 {l_br}
+
+Lo que más le atrae (respuestas 4 o 5): úsalo para elegir la carrera exacta dentro de su área principal:
+{l_int}
 
 Carreras disponibles en la UCV Chiclayo (recomienda SOLO de esta lista y usa el nombre exacto):
 {l_car}
