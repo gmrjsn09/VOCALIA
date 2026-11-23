@@ -6,6 +6,7 @@ import secrets
 import threading
 import traceback
 from collections import Counter
+from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 from typing import Dict, Optional
 
@@ -23,9 +24,6 @@ from database import get_db, engine
 import cuestionario as cq
 
 load_dotenv()
-import streamlit as st
-for k, v in st.secrets.items():
-    os.environ[k] = str(v)
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip()
 GEMINI_API_VERSION = os.getenv("GEMINI_API_VERSION", "v1beta").strip()
@@ -295,6 +293,18 @@ def rol_de(correo, rol_db) -> str:
     if (correo or "").lower() in ADMIN_EMAILS or (rol_db or "").lower().startswith("admin"):
         return "Administrador"
     return "Estudiante"
+
+
+PERU = timezone(timedelta(hours=-5))  # Perú no usa horario de verano
+
+
+def hora_peru(f) -> str:
+    """La base guarda la hora en UTC; se muestra en hora de Perú."""
+    if not f:
+        return ""
+    if f.tzinfo is None:
+        f = f.replace(tzinfo=timezone.utc)
+    return f.astimezone(PERU).replace(tzinfo=None).isoformat()
 
 
 def leer_json(v):
@@ -594,7 +604,7 @@ def historial(id_usuario: int, db: Session = Depends(get_db)):
         SELECT id_evaluacion, fecha, perfil_json FROM evaluaciones
         WHERE id_usuario = :u AND perfil_json IS NOT NULL ORDER BY id_evaluacion DESC LIMIT 20
     """), {"u": id_usuario}).fetchall()
-    return [{"id_evaluacion": f.id_evaluacion, "fecha": f.fecha.isoformat() if f.fecha else "",
+    return [{"id_evaluacion": f.id_evaluacion, "fecha": hora_peru(f.fecha),
              "perfil": leer_json(f.perfil_json)} for f in filas]
 
 
@@ -650,7 +660,7 @@ def admin_reportes(id_admin: int, db: Session = Depends(get_db)):
         evaluaciones.append({
             "id_evaluacion": f.id_evaluacion, "id_usuario": f.id_usuario,
             "nombre": f.nombre, "colegio": f.colegio, "grado": f.grado, "edad": f.edad, "sexo": f.sexo,
-            "fecha": f.fecha.isoformat() if f.fecha else "",
+            "fecha": hora_peru(f.fecha),
             "area_principal": areas[0]["nombre"] if areas else None,
             "carrera_principal": carreras_p[0]["nombre"] if carreras_p else None,
             "afinidad": carreras_p[0].get("afinidad") if carreras_p else None,
@@ -662,7 +672,7 @@ def admin_reportes(id_admin: int, db: Session = Depends(get_db)):
         ORDER BY r.id_feedback DESC LIMIT 100
     """)).fetchall()
     opiniones = [{"nivel_satisfaccion": o.nivel_satisfaccion, "comentarios": o.comentarios,
-                  "fecha": o.fecha.isoformat() if o.fecha else "", "nombre": o.nombre} for o in ops]
+                  "fecha": hora_peru(o.fecha), "nombre": o.nombre} for o in ops]
     return {"resumen": armar_resumen(evaluaciones, opiniones), "evaluaciones": evaluaciones, "opiniones": opiniones}
 
 

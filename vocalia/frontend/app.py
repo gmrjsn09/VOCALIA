@@ -1,7 +1,7 @@
 import re
 import html
 import math
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 import streamlit as st
 
@@ -165,8 +165,8 @@ def radar_svg(areas, size=360):
         ang = -math.pi / 2 + 2 * math.pi * i / n
         return cx + R * f * math.cos(ang), cy + R * f * math.sin(ang)
 
-    s = [f'<svg viewBox="0 0 {size} {size}" xmlns="http://www.w3.org/2000/svg" '
-         f'style="width:100%;max-width:{size}px;display:block;margin:auto">']
+    s = [f'<svg viewBox="-60 0 {size + 120} {size}" xmlns="http://www.w3.org/2000/svg" '
+         f'style="width:100%;max-width:{size + 120}px;display:block;margin:auto">']
     for nivel in (0.25, 0.5, 0.75, 1):
         pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in (pt(i, nivel) for i in range(n)))
         s.append(f'<polygon points="{pts}" fill="none" stroke="#22304A" stroke-width="1"/>')
@@ -208,7 +208,7 @@ def chips_mercado(c):
 
 
 def reporte_html(p, nombre):
-    hoy = datetime.now().strftime("%d/%m/%Y")
+    hoy = datetime.now(timezone(timedelta(hours=-5))).strftime("%d/%m/%Y")  # hora de Perú
     carreras = p.get("carreras", [])
     top = carreras[0] if carreras else {}
     filas_areas = "".join(

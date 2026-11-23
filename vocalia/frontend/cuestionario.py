@@ -113,6 +113,32 @@ PREGUNTAS_CARRERA = {
     "educación primaria": ["I16", "I17", "A_educacion_2", "H11", "H07"],
 }
 
+ETIQUETAS = {
+    "I01": "programar y crear aplicaciones", "I02": "armar aparatos, redes y circuitos",
+    "I03": "resolver problemas de lógica e ingeniería", "I04": "comprender el cuerpo humano y las enfermedades",
+    "I05": "atender a personas enfermas o en emergencias", "I06": "nutrición, psicología y bienestar emocional",
+    "I07": "liderar equipos y organizar proyectos", "I08": "cómo funcionan las empresas, las ventas y el dinero",
+    "I09": "crear tu propio negocio", "I10": "interpretar leyes y defender ideas",
+    "I11": "debatir sobre temas sociales y de justicia", "I12": "investigar cómo se organizan las sociedades",
+    "I13": "dibujar, diseñar y crear contenido visual", "I14": "escribir y comunicar mensajes en los medios",
+    "I15": "música, cine, moda y arquitectura creativa", "I16": "explicar temas y ver que otros aprenden",
+    "I17": "trabajar con niños y adolescentes", "I18": "mejorar la vida de tu comunidad",
+    "I19": "cuidar el medio ambiente", "I20": "tratar el agua, los residuos y la contaminación",
+    "I21": "experimentar e investigar en laboratorio o campo",
+    "A_tecnologia_1": "analizar datos para descubrir patrones", "A_tecnologia_2": "diseñar sistemas, estructuras o máquinas",
+    "A_tecnologia_3": "proteger sistemas e información de ataques", "A_salud_1": "afrontar situaciones médicas difíciles",
+    "A_salud_2": "estudiar muchos años para especializarte en salud", "A_salud_3": "acompañar emocionalmente a otras personas",
+    "A_negocios_1": "negociar y cerrar acuerdos", "A_negocios_2": "entender costos, ganancias y presupuestos",
+    "A_negocios_3": "turismo, hoteles y comercio internacional", "A_sociedad_1": "leer documentos largos para hallar argumentos",
+    "A_sociedad_2": "actuar contra la injusticia", "A_sociedad_3": "trabajar en el Estado, políticas públicas o diplomacia",
+    "A_arte_1": "perfeccionar un diseño u obra", "A_arte_2": "que mucha gente vea tus creaciones",
+    "A_arte_3": "observar colores, formas y espacios", "A_educacion_1": "repetir una explicación con paciencia",
+    "A_educacion_2": "ser modelo y guía para otros", "A_educacion_3": "diseñar programas para grupos vulnerables",
+    "A_ciencias_1": "trabajar en campo o plantas de tratamiento", "A_ciencias_2": "buscar soluciones al cambio climático",
+    "A_ciencias_3": "analizar muestras de suelos y aguas",
+}
+UMBRAL_INTERES = 60  # desde aquí (de 0 a 100) un área cuenta como interés real; 50 es "Neutral"
+
 AREAS = {
     "tecnologia": {"nombre": "Tecnología e Ingeniería", "icono": "💻", "color": "#22D3EE",
                    "holland": "Realista e Investigador",
@@ -487,6 +513,34 @@ def intereses_destacados(resp, maximo=8):
     return [textos[qid] for _, qid in altas[:maximo]]
 
 
+def _areas_fuertes(areas):
+    """Claves de las áreas que realmente le interesan: la primera siempre y las demás solo si pasan el umbral."""
+    return [a["clave"] for i, a in enumerate(areas[:2]) if i == 0 or a["directo"] >= UMBRAL_INTERES]
+
+
+def _etiqueta(qid):
+    if qid in ETIQUETAS:
+        return ETIQUETAS[qid]
+    for h in HABILIDADES:
+        if h["id"] == qid:
+            return h["nombre"].lower()
+    return None
+
+
+def motivo_carrera(nombre, area, sec, directo, resp):
+    """Explica la recomendación solo con lo que el estudiante realmente marcó (4 o 5)."""
+    txt = f"Coincide con tu afinidad por {AREAS[area]['nombre']}."
+    ids = PREGUNTAS_CARRERA.get(nombre, [])
+    altas = sorted([(resp[i], j, i) for j, i in enumerate(ids) if i in resp and resp[i] >= 4],
+                   key=lambda x: (-x[0], x[1]))
+    etiquetas = [e for e in (_etiqueta(i) for _, _, i in altas) if e][:2]
+    if etiquetas:
+        txt += " Destacan en tus respuestas: " + "; ".join(etiquetas) + "."
+    if sec in directo and directo[sec] >= UMBRAL_INTERES:
+        txt += f" También muestras interés en {AREAS[sec]['nombre']}."
+    return txt
+
+
 def perfil_respaldo(resp, carreras):
     """Perfil calculado sin IA (se usa si Gemini no responde)."""
     resp = _limpiar(resp)
@@ -495,7 +549,7 @@ def perfil_respaldo(resp, carreras):
     directo = {a["clave"]: a["directo"] for a in areas}
     promedio = sum(directo.values()) / len(directo)
     habs = habilidades_ordenadas(resp)
-    brechas = calcular_brechas(resp, [a["clave"] for a in top])
+    brechas = calcular_brechas(resp, _areas_fuertes(areas))
 
     candidatas = []
     for c in carreras:
@@ -509,8 +563,7 @@ def perfil_respaldo(resp, carreras):
             esp = afinidad_especifica(nombre, resp)
             if esp is not None:  # lo que respondiste sobre esta carrera en concreto decide entre las de una misma área
                 base = 0.6 * base + 0.4 * esp
-            motivo = (f"Combina tu afinidad por {AREAS[area]['nombre']} con tu interés en {AREAS[sec]['nombre']}."
-                      if sec in directo else f"Coincide con tu afinidad por {AREAS[area]['nombre']}.")
+            motivo = motivo_carrera(nombre, area, sec, directo, resp)
         else:
             base = max(0, promedio - 15)
             motivo = "Carrera de la UCV Chiclayo."
@@ -523,18 +576,27 @@ def perfil_respaldo(resp, carreras):
     principal = next((c for c in candidatas if c["_area"] == area_top), None)
     orden = ([principal] if principal else []) + [c for c in candidatas if c is not principal]
     elegidas, cuenta = [], {}
+    # Si ninguna otra área te interesa de verdad, las 3 carreras pueden ser de tu área fuerte
+    limite = 3 if len(areas) < 2 or areas[1]["directo"] < UMBRAL_INTERES else 2
     for c in orden:
-        if cuenta.get(c["_area"], 0) >= 2:
+        if cuenta.get(c["_area"], 0) >= limite:
             continue
         cuenta[c["_area"]] = cuenta.get(c["_area"], 0) + 1
         elegidas.append({k: v for k, v in c.items() if k != "_area"})
         if len(elegidas) == 3:
             break
 
-    fort = [h["nombre"] for h in habs[:3]]
-    resumen = (f"Tu perfil destaca en {top[0]['nombre']} ({top[0]['puntaje']}%) y "
-               f"{top[1]['nombre']} ({top[1]['puntaje']}%). "
-               + (f"Tus mayores fortalezas son {', '.join(fort)}." if fort else ""))
+    fort = [h["nombre"] for h in habs if h["valor"] >= 4][:3]  # solo lo que marcó como Alto o Muy alto
+    if top[0]["directo"] < UMBRAL_INTERES:
+        resumen = (f"Tus respuestas muestran intereses repartidos; el área más cercana a ti es "
+                   f"{top[0]['nombre']} ({top[0]['puntaje']}%). ")
+    else:
+        resumen = f"Tu perfil destaca principalmente en {top[0]['nombre']} ({top[0]['puntaje']}%)"
+        if top[1]["directo"] >= UMBRAL_INTERES:
+            resumen += f", con interés también en {top[1]['nombre']} ({top[1]['puntaje']}%)"
+        resumen += ". "
+    resumen += f"Tus mayores fortalezas son {', '.join(fort)}." if fort else ""
+    resumen = resumen.strip()
     plan = [
         f"Revisa las carreras de {top[0]['nombre']} en la pestaña Oferta educativa y abre su malla curricular.",
         "Conversa con estudiantes o profesionales de esas carreras para conocer su día a día.",
@@ -673,7 +735,7 @@ def completar_perfil(parcial, resp, nivel, modo):
 def construir_prompt(usuario, resp, carreras):
     resp = _limpiar(resp)
     areas = calcular_puntajes(resp)
-    top = [a["clave"] for a in areas[:2]]
+    top = _areas_fuertes(areas)
     l_areas = "\n".join(f"- {a['nombre']}: {a['directo']}/100" for a in areas)
     l_hab = "\n".join(f"- {h['nombre']}: {h['valor']}/5" for h in habilidades_ordenadas(resp))
     brechas = calcular_brechas(resp, top)
@@ -721,5 +783,6 @@ Responde SOLO con un JSON válido con esta estructura exacta:
   "plan": ["paso concreto 1", "paso concreto 2", "paso concreto 3"]
 }}
 Incluye exactamente 3 carreras de mayor a menor afinidad, coherentes con los puntajes por área.
+Sé coherente con los datos: en "fortalezas" menciona SOLO habilidades con 4 o 5 de 5; considera un área como interés real solo si tiene 60/100 o más (50 es neutral); no inventes intereses.
 La PRIMERA carrera debe pertenecer al área con mayor afinidad ({areas[0]['nombre']}).
 """
