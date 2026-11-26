@@ -68,8 +68,8 @@ h1, h2, h3 { font-family: 'Sora', sans-serif !important; }
 .row b { font-family: 'Sora', sans-serif; font-size: .98rem; }
 .row .pct { font-weight: 800; }
 .sub { color: #9FB0C8; font-size: .9rem; margin: 2px 0 8px; }
-.bar { background: #22304A; border-radius: 99px; height: 9px; overflow: hidden; margin-top: 5px; }
-.bar div { height: 100%; border-radius: 99px; }
+.bar { background: #22304A; border-radius: 99px; height: 9px; overflow: hidden; margin: 5px 0 0 0; padding: 0; }
+.bar > div { height: 100%; border-radius: 99px; margin: 0; padding: 0; display: block; }
 .why2 { color: #C9D6E8; font-size: .92rem; margin-top: 10px; }
 .pill { display: inline-block; background: rgba(167,139,250,.16); color: #D8CCFF; border: 1px solid rgba(167,139,250,.45);
         border-radius: 14px; padding: 7px 14px; margin: 0 8px 8px 0; font-size: .9rem; }
@@ -165,8 +165,8 @@ def radar_svg(areas, size=360):
         ang = -math.pi / 2 + 2 * math.pi * i / n
         return cx + R * f * math.cos(ang), cy + R * f * math.sin(ang)
 
-    s = [f'<svg viewBox="-60 0 {size + 120} {size}" xmlns="http://www.w3.org/2000/svg" '
-         f'style="width:100%;max-width:{size + 120}px;display:block;margin:auto">']
+    s = [f'<svg viewBox="-95 0 {size + 190} {size}" xmlns="http://www.w3.org/2000/svg" '
+         f'style="width:100%;max-width:{size + 190}px;display:block;margin:auto">']
     for nivel in (0.25, 0.5, 0.75, 1):
         pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in (pt(i, nivel) for i in range(n)))
         s.append(f'<polygon points="{pts}" fill="none" stroke="#22304A" stroke-width="1"/>')
